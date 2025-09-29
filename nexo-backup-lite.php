@@ -26,7 +26,7 @@ require_once NEXO_BACKUP_LITE_DIR . 'includes/Updater.php';
 // === Auto-update desde GitHub ===
 // Cambia 'TU_USUARIO_GITHUB' y 'TU_REPO_GITHUB' por los de tu repositorio
 add_action('init', function () {
-    new \Nexo\Backup\Updater(__FILE__, 'DigitalNexo', 'Nexo-Backup-Lite-');
+    new \Nexo\Backup\Updater(__FILE__, 'DigitalNexo', 'Nexo-Backup-Lite');
 });
 
 // Boot del scheduler
