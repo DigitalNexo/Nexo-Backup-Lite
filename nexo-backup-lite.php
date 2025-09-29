@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Nexo Backup Lite (Local Only)
- * Description: Copias de seguridad locales (fuera del webroot) con planificación (diaria, cada 2 días, semanal, mensual), backup en segundo plano con progreso, listado y gestión de copias.
- * Version: 0.4.0
+ * Description: Copias de seguridad locales (fuera del webroot) con planificación, ejecución en segundo plano con progreso, listado y gestión de copias, y actualizaciones automáticas desde GitHub.
+ * Version: 0.5.0
  * Author: Nexo
  * Requires at least: 6.0
  * Requires PHP: 8.0
@@ -10,7 +10,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('NEXO_BACKUP_LITE_VER', '0.4.0');
+define('NEXO_BACKUP_LITE_VER', '0.5.0');
 define('NEXO_BACKUP_LITE_DIR', plugin_dir_path(__FILE__));
 define('NEXO_BACKUP_LITE_URL', plugin_dir_url(__FILE__));
 define('NEXO_BACKUP_LITE_OPTION', 'nexo_backup_lite_settings');
@@ -21,6 +21,13 @@ require_once NEXO_BACKUP_LITE_DIR . 'includes/DatabaseDumper.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Admin.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Scheduler.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Copies.php';
+require_once NEXO_BACKUP_LITE_DIR . 'includes/Updater.php';
+
+// === Auto-update desde GitHub ===
+// Cambia 'TU_USUARIO_GITHUB' y 'TU_REPO_GITHUB' por los de tu repositorio
+add_action('init', function () {
+    new \Nexo\Backup\Updater(__FILE__, 'DigitalNexo', 'Nexo-Backup-Lite-');
+});
 
 // Boot del scheduler
 add_action('plugins_loaded', function () {
@@ -217,7 +224,7 @@ add_action('wp_ajax_nexo_backup_tick', function(){
         $processed = 0;
 
         $zip = new ZipArchive();
-        if ($zip->open($st['zip_file'])!==true) throw new RuntimeException('No se pudo abrir ZIP');
+        if ($zip->open($st['zip_file'])!==true) throw new \RuntimeException('No se pudo abrir ZIP');
 
         while($processed < $batchSize && $st['index'] < $st['total']){
             $rel = $st['files'][$st['index']];
