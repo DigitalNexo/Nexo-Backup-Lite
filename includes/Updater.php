@@ -6,20 +6,21 @@ if (!defined('ABSPATH')) exit;
 /**
  * Updater de plugins desde GitHub Releases.
  *
- * Requisitos:
- *  - Publicar cada versión como "Release" en GitHub con un tag estilo v0.5.0
- *  - El ZIP que ofrece GitHub (zipball_url) es válido para actualización.
- *
- * Integración en el plugin principal (ejemplo):
+ * Cómo usar:
  *   require_once NEXO_BACKUP_LITE_DIR . 'includes/Updater.php';
  *   add_action('init', function () {
  *       new \Nexo\Backup\Updater(__FILE__, 'TU_USUARIO_GITHUB', 'TU_REPO_GITHUB');
  *   });
+ *
+ * Requisitos:
+ *  - El repositorio debe ser PÚBLICO.
+ *  - Crear cada versión como "Release" en GitHub con un tag tipo v0.6.0 o 0.6.0.
+ *  - El ZIP usado será el zipball_url del release.
  */
 class Updater {
-    protected string $pluginFile;   // Ruta absoluta al archivo principal del plugin
-    protected string $pluginSlug;   // nexo-backup-lite/nexo-backup-lite.php
-    protected string $slugDir;      // nexo-backup-lite
+    protected string $pluginFile;   // ruta absoluta al archivo principal del plugin
+    protected string $pluginSlug;   // ej: nexo-backup-lite/nexo-backup-lite.php
+    protected string $slugDir;      // ej: nexo-backup-lite
     protected string $githubUser;
     protected string $githubRepo;
 
@@ -30,33 +31,36 @@ class Updater {
         $this->githubUser = $githubUser;
         $this->githubRepo = $githubRepo;
 
-        // Hook para inyectar actualización disponible
+        // Inyecta actualización disponible (si procede)
         add_filter('pre_set_site_transient_update_plugins', [$this, 'checkForUpdate']);
 
-        // Ficha del plugin al pulsar "Ver detalles de la versión"
+        // Ficha al pulsar "Ver detalles de la versión"
         add_filter('plugins_api', [$this, 'pluginsApi'], 10, 3);
 
-        // Mensaje bajo el plugin en la lista (opcional)
+        // Mensaje inline bajo el plugin (muestra comparación y link al release)
         add_action('in_plugin_update_message-' . $this->pluginSlug, [$this, 'inlineUpdateMessage'], 10, 2);
     }
 
     /**
-     * Comprueba si hay una versión nueva en GitHub y se la comunica a WP.
+     * Compara la versión instalada con la última release en GitHub.
      */
     public function checkForUpdate($transient) {
         if (empty($transient->checked)) return $transient;
 
-        $currentVersion = $this->getCurrentVersion(); // lee constante o cabecera
+        $currentVersion = $this->getCurrentVersion();
         if (!$currentVersion) return $transient;
 
         $release = $this->getLatestRelease();
         if (!$release || empty($release['tag_name'])) return $transient;
 
-        $newVersion = ltrim((string)$release['tag_name'], 'v');
-        if (version_compare($newVersion, $currentVersion, '<=')) return $transient;
+        $newVersion = $this->normalizeTag($release['tag_name']);
 
-        $package = $release['zipball_url'] ?? '';
-        $homepage = $release['html_url'] ?? '';
+        if (!is_string($newVersion) || $newVersion === '' || version_compare($newVersion, $currentVersion, '<=')) {
+            return $transient;
+        }
+
+        $package  = $release['zipball_url'] ?? '';
+        $homepage = $release['html_url']    ?? '';
 
         $pluginData = (object)[
             'slug'        => $this->slugDir,
@@ -64,8 +68,6 @@ class Updater {
             'new_version' => $newVersion,
             'url'         => $homepage,
             'package'     => $package,
-            // 'tested'    => '6.6', // opcional
-            // 'requires'  => '6.0',
         ];
 
         $transient->response[$this->pluginSlug] = $pluginData;
@@ -73,7 +75,7 @@ class Updater {
     }
 
     /**
-     * Proporciona la "ficha" del plugin al pulsar "Ver detalles de la versión".
+     * Proporciona los datos de la tarjeta "Ver detalles de la versión".
      */
     public function pluginsApi($res, $action, $args) {
         if ($action !== 'plugin_information' || empty($args->slug) || $args->slug !== $this->slugDir) {
@@ -83,12 +85,11 @@ class Updater {
         $release = $this->getLatestRelease();
         if (!$release || empty($release['tag_name'])) return $res;
 
-        $version   = ltrim((string)$release['tag_name'], 'v');
+        $version   = $this->normalizeTag($release['tag_name']);
         $changelog = (string)($release['body'] ?? '');
         $homepage  = (string)($release['html_url'] ?? '');
         $download  = (string)($release['zipball_url'] ?? '');
 
-        // Estructura esperada por WP
         $info = (object)[
             'name'          => $this->getPluginName(),
             'slug'          => $this->slugDir,
@@ -105,21 +106,25 @@ class Updater {
     }
 
     /**
-     * Muestra un mensaje inline bajo el plugin cuando hay actualización.
+     * Muestra un mensaje bajo el plugin cuando hay actualización disponible.
      */
     public function inlineUpdateMessage($pluginData, $response) {
-        $release = $this->getLatestRelease();
+        $installed = $this->getCurrentVersion();
+        $release   = $this->getLatestRelease();
         if (!$release) return;
-        $txt = '';
+
+        $newVersion = isset($release['tag_name']) ? $this->normalizeTag($release['tag_name']) : null;
+        $txt = 'Instalada: <code>' . esc_html($installed ?: '?') . '</code> · Última en GitHub: <code>' . esc_html($newVersion ?: '?') . '</code>';
+
         if (!empty($release['name'])) {
-            $txt .= '<strong>' . esc_html($release['name']) . '</strong> ';
+            $txt .= ' — <strong>' . esc_html($release['name']) . '</strong>';
         }
         if (!empty($release['published_at'])) {
             $date = date_i18n(get_option('date_format') . ' ' . get_option('time_format'), strtotime($release['published_at']));
-            $txt .= '(' . esc_html($date) . ')';
+            $txt .= ' (' . esc_html($date) . ')';
         }
         if (!empty($release['body'])) {
-            $body = esc_html($this->truncate($release['body'], 220));
+            $body = esc_html($this->truncate((string)$release['body'], 220));
             $txt .= ' — ' . $body;
         }
         if (!empty($release['html_url'])) {
@@ -127,20 +132,23 @@ class Updater {
             $txt .= ' <a href="' . $url . '" target="_blank" rel="noopener noreferrer">Ver release</a>';
         }
 
-        if ($txt) {
-            echo '<p style="margin:.5em 0 0;">' . $txt . '</p>';
-        }
+        echo '<p style="margin:.5em 0 0;">' . $txt . '</p>';
     }
 
     /**
-     * Obtiene la última release de GitHub con caché (6h).
+     * Obtiene la última release de GitHub con caché (2 horas) y logs de error.
      */
     protected function getLatestRelease(): ?array {
         $key = 'nexo_backup_latest_release_' . md5($this->githubUser . '/' . $this->githubRepo);
         $cached = get_site_transient($key);
         if (is_array($cached)) return $cached;
 
-        $url = sprintf('https://api.github.com/repos/%s/%s/releases/latest', rawurlencode($this->githubUser), rawurlencode($this->githubRepo));
+        $url = sprintf(
+            'https://api.github.com/repos/%s/%s/releases/latest',
+            rawurlencode($this->githubUser),
+            rawurlencode($this->githubRepo)
+        );
+
         $res = wp_remote_get($url, [
             'timeout' => 15,
             'headers' => [
@@ -149,22 +157,31 @@ class Updater {
             ],
         ]);
 
-        if (is_wp_error($res)) return null;
+        if (is_wp_error($res)) {
+            error_log('[Nexo Backup Lite] Updater: wp_remote_get error: ' . $res->get_error_message());
+            return null;
+        }
 
         $code = wp_remote_retrieve_response_code($res);
-        if ($code !== 200) return null;
+        if ($code !== 200) {
+            error_log('[Nexo Backup Lite] Updater: HTTP ' . $code . ' al pedir ' . $url);
+            return null;
+        }
 
         $body = wp_remote_retrieve_body($res);
         $json = json_decode($body, true);
-        if (!is_array($json)) return null;
+        if (!is_array($json)) {
+            error_log('[Nexo Backup Lite] Updater: JSON inválido desde GitHub');
+            return null;
+        }
 
-        set_site_transient($key, $json, 6 * HOUR_IN_SECONDS);
+        // cache 2 horas
+        set_site_transient($key, $json, 2 * HOUR_IN_SECONDS);
         return $json;
     }
 
     /**
-     * Intenta obtener la versión actual del plugin.
-     * Prioriza la constante NEXO_BACKUP_LITE_VER; si no, lee cabecera del plugin.
+     * Lee versión instalada (constante o cabecera del plugin).
      */
     protected function getCurrentVersion(): ?string {
         if (defined('NEXO_BACKUP_LITE_VER')) {
@@ -192,6 +209,20 @@ class Updater {
         }
         $data = get_plugin_data($this->pluginFile, false, false);
         return $data['Description'] ?? '';
+    }
+
+    /**
+     * Normaliza un tag de release a versión comparable por PHP.
+     * Acepta "v0.6.0" o "0.6.0" y devuelve "0.6.0".
+     */
+    protected function normalizeTag(string $tag): string {
+        $tag = trim($tag);
+        if ($tag === '') return '';
+        // quita prefijo v/V
+        if ($tag[0] === 'v' || $tag[0] === 'V') {
+            $tag = substr($tag, 1);
+        }
+        return $tag;
     }
 
     protected function truncate(string $txt, int $max): string {
