@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Nexo Backup Lite (Local Only)
- * Description: Copias de seguridad locales (fuera del webroot) con planificación (diaria, cada 2 días, semanal, mensual). Incluye backup clásico y en segundo plano con barra de progreso.
- * Version: 0.3.0
+ * Description: Copias de seguridad locales (fuera del webroot) con planificación (diaria, cada 2 días, semanal, mensual), backup en segundo plano con progreso, listado y gestión de copias.
+ * Version: 0.4.0
  * Author: Nexo
  * Requires at least: 6.0
  * Requires PHP: 8.0
@@ -10,23 +10,24 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('NEXO_BACKUP_LITE_VER', '0.3.0');
+define('NEXO_BACKUP_LITE_VER', '0.4.0');
 define('NEXO_BACKUP_LITE_DIR', plugin_dir_path(__FILE__));
 define('NEXO_BACKUP_LITE_URL', plugin_dir_url(__FILE__));
 define('NEXO_BACKUP_LITE_OPTION', 'nexo_backup_lite_settings');
 
-// Includes
+// === Includes ===
 require_once NEXO_BACKUP_LITE_DIR . 'includes/BackupManager.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/DatabaseDumper.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Admin.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Scheduler.php';
+require_once NEXO_BACKUP_LITE_DIR . 'includes/Copies.php';
 
 // Boot del scheduler
 add_action('plugins_loaded', function () {
     \Nexo\Backup\Scheduler::boot();
 });
 
-// Activación
+// === Activación ===
 register_activation_hook(__FILE__, function () {
     $defaults = [
         'dest_path'          => '',
@@ -49,12 +50,12 @@ register_activation_hook(__FILE__, function () {
     }
 });
 
-// Desactivación
+// === Desactivación ===
 register_deactivation_hook(__FILE__, function () {
     \Nexo\Backup\Scheduler::unscheduleAll();
 });
 
-// Desinstalación
+// === Desinstalación ===
 register_uninstall_hook(__FILE__, 'nexo_backup_lite_uninstall');
 function nexo_backup_lite_uninstall() {
     delete_option(NEXO_BACKUP_LITE_OPTION);
@@ -125,7 +126,7 @@ function nexo_backup_new_job_state($settings){
 function nexo_backup_get_job($id){ return get_transient(nexo_backup_job_key($id)) ?: null; }
 function nexo_backup_put_job($state){ set_transient(nexo_backup_job_key($state['id']), $state, 2 * HOUR_IN_SECONDS); }
 
-// Iniciar backup
+// === AJAX: iniciar backup ===
 add_action('wp_ajax_nexo_backup_start', function(){
     check_ajax_referer('nexo_backup_ajax');
     if (!current_user_can('manage_options')) wp_send_json_error();
@@ -176,7 +177,7 @@ add_action('wp_ajax_nexo_backup_start', function(){
     wp_send_json_success(['job_id'=>$st['id'], 'status'=>$st['status'], 'progress'=>$st['progress'], 'message'=>$st['message']]);
 });
 
-// Estado
+// === AJAX: estado ===
 add_action('wp_ajax_nexo_backup_status', function(){
     check_ajax_referer('nexo_backup_ajax');
     if (!current_user_can('manage_options')) wp_send_json_error();
@@ -187,7 +188,7 @@ add_action('wp_ajax_nexo_backup_status', function(){
     wp_send_json_success($st);
 });
 
-// Cancelar
+// === AJAX: cancelar ===
 add_action('wp_ajax_nexo_backup_cancel', function(){
     check_ajax_referer('nexo_backup_ajax');
     if (!current_user_can('manage_options')) wp_send_json_error();
@@ -202,7 +203,7 @@ add_action('wp_ajax_nexo_backup_cancel', function(){
     wp_send_json_success($st);
 });
 
-// Procesar lote
+// === AJAX: procesar lote ===
 add_action('wp_ajax_nexo_backup_tick', function(){
     check_ajax_referer('nexo_backup_ajax');
     if (!current_user_can('manage_options')) wp_send_json_error();

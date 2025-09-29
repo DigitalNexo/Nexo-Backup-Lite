@@ -1,71 +1,90 @@
 <?php
 namespace Nexo\Backup;
 
+use ZipArchive;
+use RecursiveIteratorIterator;
+use RecursiveDirectoryIterator;
+use FilesystemIterator;
+
 if (!defined('ABSPATH')) exit;
 
+/**
+ * Ejecuta un backup clásico (síncrono).
+ * Usado por el botón "Crear copia ahora" y por el cron.
+ * El backup en segundo plano usa su propio motor en nexo-backup-lite.php.
+ */
 class BackupManager {
-    protected $settings;
+    protected array $settings;
 
     public function __construct(array $settings) {
         $this->settings = $settings;
     }
 
+    /**
+     * Ejecuta el backup completo en $destPath
+     * @return bool true si se completó, false si falló
+     */
     public function run(string $destPath): bool {
-        $ts = wp_date('Ymd-His');
-        $workDir = rtrim($destPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'nexo-' . $ts;
+        try {
+            if (!is_dir($destPath) || !is_writable($destPath)) {
+                throw new \RuntimeException("Ruta de destino inválida o no escribible: $destPath");
+            }
 
-        if (!@mkdir($workDir, 0755, true)) {
-            throw new \RuntimeException('No se pudo crear el directorio de trabajo: '.$workDir);
+            $ts = wp_date('Ymd-His');
+            $workDir = trailingslashit($destPath) . 'nexo-' . $ts;
+            if (!@mkdir($workDir, 0755, true)) {
+                throw new \RuntimeException("No se pudo crear el directorio de trabajo: $workDir");
+            }
+
+            // 1) Dump de base de datos
+            $dumper = new DatabaseDumper();
+            $dbFile = $workDir . DIRECTORY_SEPARATOR . "db-$ts.sql.gz";
+            $dumper->dumpToGzip($dbFile);
+
+            // 2) Crear ZIP con archivos
+            $zipFile = $workDir . DIRECTORY_SEPARATOR . "files-$ts.zip";
+            $this->zipSiteFiles($zipFile);
+
+            // 3) Manifest con hashes
+            $manifest = [
+                'version'     => NEXO_BACKUP_LITE_VER,
+                'created_at'  => $ts,
+                'site_url'    => site_url(),
+                'wp_version'  => get_bloginfo('version'),
+                'db'          => basename($dbFile),
+                'db_sha256'   => $this->hashFile($dbFile),
+                'files'       => basename($zipFile),
+                'files_sha256'=> $this->hashFile($zipFile),
+                'retain_days' => intval($this->settings['retain_days'] ?? 7),
+            ];
+            file_put_contents($workDir . DIRECTORY_SEPARATOR . 'manifest.json', wp_json_encode($manifest, JSON_PRETTY_PRINT));
+
+            // 4) Retención
+            $this->applyRetention($destPath, $manifest['retain_days']);
+
+            return true;
+        } catch (\Throwable $e) {
+            error_log('[Nexo Backup Lite] BackupManager error: '.$e->getMessage());
+            return false;
         }
-
-        // 1) Dump de base de datos (.sql.gz)
-        $dbFile = $workDir . DIRECTORY_SEPARATOR . "db-{$ts}.sql.gz";
-        $dumper = new DatabaseDumper();
-        $dumper->dumpToGzip($dbFile);
-
-        // 2) Archivos del sitio (zip)
-        $zipFile = $workDir . DIRECTORY_SEPARATOR . "files-{$ts}.zip";
-        $this->zipSite($zipFile);
-
-        // 3) Manifiesto
-        $manifest = [
-            'version' => NEXO_BACKUP_LITE_VER,
-            'created_at' => $ts,
-            'site_url' => site_url(),
-            'wp_version' => get_bloginfo('version'),
-            'db' => basename($dbFile),
-            'files' => basename($zipFile),
-            'retain_days' => intval($this->settings['retain_days'] ?? 7),
-        ];
-        file_put_contents($workDir . DIRECTORY_SEPARATOR . 'manifest.json', wp_json_encode($manifest, JSON_PRETTY_PRINT));
-
-        // 4) Retención simple (borrar carpetas antiguas)
-        $this->applyRetention(dirname($workDir), $manifest['retain_days']);
-
-        return true;
     }
 
-    protected function zipSite(string $zipPath): void {
-        if (!class_exists(\ZipArchive::class)) {
-            throw new \RuntimeException('ZipArchive no disponible en este PHP.');
+    /**
+     * Crea un zip de los archivos del sitio, respetando exclusiones
+     */
+    protected function zipSiteFiles(string $zipPath): void {
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE)!==true) {
+            throw new \RuntimeException("No se pudo crear el archivo ZIP: $zipPath");
         }
 
+        $root = ABSPATH;
         $exDirs = array_map('strtolower', $this->settings['exclude_dirs'] ?? []);
         $exPatterns = $this->settings['exclude_patterns'] ?? [];
 
-        $root = ABSPATH; // incluye wp-admin/wp-includes/wp-content
-        $zip = new \ZipArchive();
-        if ($zip->open($zipPath, \ZipArchive::CREATE) !== true) {
-            throw new \RuntimeException('No se pudo crear el ZIP.');
-        }
-
-        // añadir wp-config.php
-        $cfg = ABSPATH . 'wp-config.php';
-        if (is_readable($cfg)) $zip->addFile($cfg, 'wp-config.php');
-
-        $rii = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
-        foreach ($rii as $file) {
-            /** @var \SplFileInfo $file */
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+        foreach ($it as $file) {
+            if (!$file->isFile()) continue;
             $path = $file->getPathname();
             $rel  = ltrim(str_replace($root, '', $path), DIRECTORY_SEPARATOR);
 
@@ -73,42 +92,45 @@ class BackupManager {
             $parts = explode(DIRECTORY_SEPARATOR, strtolower($rel));
             if (!empty($parts) && in_array($parts[0], $exDirs, true)) continue;
 
-            // excluir patrones simples
+            // excluir patrones
             foreach ($exPatterns as $pat) {
-                if (fnmatch($pat, basename($rel))) {
-                    continue 2;
-                }
+                if (fnmatch($pat, basename($rel))) continue 2;
             }
 
-            // evitar incluir la carpeta de destino si cae bajo webroot (no debería)
-            if (str_starts_with(realpath($path) ?: '', realpath($this->settings['dest_path'] ?? '') ?: '___')) {
-                continue;
-            }
-
-            if ($file->isFile() && is_readable($path)) {
-                $zip->addFile($path, $rel);
-            }
+            $zip->addFile($path, $rel);
         }
 
         $zip->close();
     }
 
-    protected function applyRetention(string $destBase, int $retainDays): void {
-        if ($retainDays < 1) return;
-        $cut = time() - ($retainDays * DAY_IN_SECONDS);
+    /**
+     * Aplica retención: borra copias más antiguas que $days
+     */
+    protected function applyRetention(string $destPath, int $days): void {
+        if ($days <= 0) return;
 
-        foreach (glob($destBase . DIRECTORY_SEPARATOR . 'nexo-*') as $dir) {
-            if (!is_dir($dir)) continue;
-            if (filemtime($dir) < $cut) {
+        $cut = time() - ($days * DAY_IN_SECONDS);
+        foreach (glob($destPath . DIRECTORY_SEPARATOR . 'nexo-*') as $dir) {
+            if (is_dir($dir) && filemtime($dir) < $cut) {
                 $this->rrmdir($dir);
             }
         }
     }
 
+    /**
+     * Hash SHA-256 de un archivo
+     */
+    protected function hashFile(string $path): ?string {
+        if (!is_file($path)) return null;
+        return hash_file('sha256', $path);
+    }
+
+    /**
+     * Borrado recursivo seguro
+     */
     protected function rrmdir(string $dir): void {
-        $it = new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS);
-        $ri = new \RecursiveIteratorIterator($it, \RecursiveIteratorIterator::CHILD_FIRST);
-        foreach ($ri as $f) {
+        $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($it as $f) {
             $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
         }
         @rmdir($dir);
