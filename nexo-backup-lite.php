@@ -24,7 +24,7 @@ require_once NEXO_BACKUP_LITE_DIR . 'includes/Copies.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Updater.php';
 
 // === Auto-update desde GitHub ===
-// Cambia 'TU_USUARIO_GITHUB' y 'TU_REPO_GITHUB' por los de tu repositorio
+// Sustituye 'TU_USUARIO_GITHUB' y 'TU_REPO_GITHUB' por tu usuario y repo reales
 add_action('init', function () {
     new \Nexo\Backup\Updater(__FILE__, 'DigitalNexo', 'Nexo-Backup-Lite');
 });
@@ -153,6 +153,7 @@ add_action('wp_ajax_nexo_backup_start', function(){
     }
     $st['work_dir'] = $workDir;
 
+    // 1) Dump DB
     try{
         $st['message']  = 'Volcando base de datos…';
         $st['progress'] = 15;
@@ -163,18 +164,29 @@ add_action('wp_ajax_nexo_backup_start', function(){
         wp_send_json_success($st);
     }
 
+    // 2) Listado de archivos
     $list = nexo_list_site_files($settings, $st);
     $st['files'] = $list;
     $st['total'] = count($list);
 
+    // 3) Crear ZIP vacío y VALIDAR que queda correcto
     $zipPath = $workDir . DIRECTORY_SEPARATOR . "files-$ts.zip";
     $zip = new ZipArchive();
-    if ($zip->open($zipPath, ZipArchive::CREATE)!==true){
-        $st['status']='error'; $st['error']='No se pudo crear el ZIP';
+    $openRes = $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+    if ($openRes !== true){
+        $st['status']='error'; $st['error']='No se pudo crear el ZIP (código ' . (int)$openRes . ')';
         nexo_backup_put_job($st);
         wp_send_json_success($st);
     }
+    // inicializa con un archivo mínimo para asegurar estructura válida
+    $zip->addFromString('.__nexo_init', 'init');
     $zip->close();
+
+    if (!is_file($zipPath) || filesize($zipPath) <= 0) {
+        $st['status']='error'; $st['error']='ZIP no se creó correctamente';
+        nexo_backup_put_job($st);
+        wp_send_json_success($st);
+    }
     $st['zip_file'] = $zipPath;
 
     $st['message']  = 'Listo para empaquetar archivos…';
@@ -223,8 +235,25 @@ add_action('wp_ajax_nexo_backup_tick', function(){
         $batchSize = 300;
         $processed = 0;
 
+        // Abrir (o crear si se perdió) el ZIP de forma robusta entre peticiones
+        $zipPath = $st['zip_file'] ?? '';
+        if (!$zipPath) {
+            throw new RuntimeException('Ruta ZIP vacía en estado.');
+        }
+        if (!is_file($zipPath)) {
+            $touchDir = dirname($zipPath);
+            if (!is_dir($touchDir)) {
+                if (!@mkdir($touchDir, 0755, true)) {
+                    throw new RuntimeException('No se pudo recrear el directorio de trabajo.');
+                }
+            }
+        }
+
         $zip = new ZipArchive();
-        if ($zip->open($st['zip_file'])!==true) throw new \RuntimeException('No se pudo abrir ZIP');
+        $openRes = $zip->open($zipPath, ZipArchive::CREATE);
+        if ($openRes !== true) {
+            throw new RuntimeException('No se pudo abrir/crear ZIP (código ' . (int)$openRes . ')');
+        }
 
         while($processed < $batchSize && $st['index'] < $st['total']){
             $rel = $st['files'][$st['index']];
@@ -238,7 +267,7 @@ add_action('wp_ajax_nexo_backup_tick', function(){
         $zip->close();
 
         if ($st['total'] > 0){
-            $filesPct = ($st['index'] / $st['total']) * 80;
+            $filesPct = ($st['index'] / $st['total']) * 80; // 20–100%
             $st['progress'] = max(20, min(100, 20 + $filesPct));
             $st['message']  = 'Empaquetando archivos… (' . $st['index'] . ' / ' . $st['total'] . ')';
         }
@@ -312,6 +341,7 @@ function nexo_finalize_backup(array $st): void {
     ];
     file_put_contents(trailingslashit($st['work_dir']).'manifest.json', wp_json_encode($manifest, JSON_PRETTY_PRINT));
 
+    // Retención
     $base = dirname($st['work_dir']);
     $retainDays = $manifest['retain_days'];
     if ($retainDays > 0){
