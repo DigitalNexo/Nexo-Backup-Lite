@@ -4,36 +4,57 @@ namespace Nexo\Backup;
 if (!defined('ABSPATH')) exit;
 
 class Admin {
+    const CAP  = 'manage_options';
+    const SLUG = 'nexo-backup-lite'; // menú padre
+
     public function __construct() {
-        add_action('admin_menu', [$this, 'menu']);
-        add_action('admin_init', [$this, 'settings']);
+        add_action('admin_menu',        [$this, 'menu']);
+        add_action('admin_init',        [$this, 'settings']);
         add_action('update_option_' . NEXO_BACKUP_LITE_OPTION, [$this, 'onSettingsUpdated'], 10, 3);
         add_action('admin_enqueue_scripts', [$this, 'assets']);
     }
 
-    /**
-     * Reprograma el cron cuando cambian los ajustes
-     */
     public function onSettingsUpdated($old, $new, $option) {
         Scheduler::reschedule(is_array($new) ? $new : []);
     }
 
     /**
-     * Añade el menú en Ajustes
+     * Menú propio "Nexo Backup Lite" con subpáginas
      */
     public function menu() {
-        add_options_page(
+        add_menu_page(
             'Nexo Backup Lite',
             'Nexo Backup Lite',
-            'manage_options',
-            'nexo-backup-lite',
+            self::CAP,
+            self::SLUG,
+            [$this, 'render'],
+            'dashicons-database', // icono WP
+            65 // posición entre Ajustes y Herramientas
+        );
+
+        // Submenú Ajustes (apunta a la misma pantalla render)
+        add_submenu_page(
+            self::SLUG,
+            'Ajustes',
+            'Ajustes',
+            self::CAP,
+            self::SLUG,
             [$this, 'render']
         );
+
+        // Submenú Copias (lo crea Copies.php, pero por si carga después)
+        if (!has_action('admin_menu', [Copies::class, 'menu'])) {
+            add_submenu_page(
+                self::SLUG,
+                'Copias',
+                'Copias',
+                self::CAP,
+                Copies::SLUG,
+                function () { echo '<div class="wrap"><h1>Copias</h1><p>Cargando…</p></div>'; }
+            );
+        }
     }
 
-    /**
-     * Registra los campos de configuración
-     */
     public function settings() {
         register_setting('nexo_backup_lite_group', NEXO_BACKUP_LITE_OPTION);
 
@@ -41,32 +62,43 @@ class Admin {
             'nexo_backup_lite_section',
             'Ajustes',
             function () {
-                echo '<p>Configura la ruta de destino (fuera del webroot), la retención y la planificación automática.</p>';
+                echo '<p>Configura la ruta de destino (fuera del webroot), la retención, la planificación automática y el patrón de nombres.</p>';
             },
-            'nexo-backup-lite'
+            self::SLUG
         );
 
-        // Ruta de destino
+        // Ruta destino
         add_settings_field('dest_path', 'Ruta de destino', function () {
             $opts = get_option(NEXO_BACKUP_LITE_OPTION, []);
             $v = esc_attr($opts['dest_path'] ?? '');
             echo '<input type="text" class="regular-text code" name="' . NEXO_BACKUP_LITE_OPTION . '[dest_path]" value="' . $v . '" placeholder="/home/USUARIO/domains/tu-dominio/backups_wp" />';
-            echo '<p class="description">Debe existir y ser escribible por el usuario de PHP. Ej.: <code>/home/usuario/domains/midominio/backups_wp</code></p>';
-        }, 'nexo-backup-lite', 'nexo_backup_lite_section');
+            echo '<p class="description">Debe existir y ser escribible. Ej.: <code>/home/usuario/domains/midominio/backups_wp</code></p>';
+        }, self::SLUG, 'nexo_backup_lite_section');
 
-        // Retención (días)
+        // Retención
         add_settings_field('retain_days', 'Retención (días)', function () {
             $opts = get_option(NEXO_BACKUP_LITE_OPTION, []);
             $v = intval($opts['retain_days'] ?? 7);
             echo '<input type="number" min="1" name="' . NEXO_BACKUP_LITE_OPTION . '[retain_days]" value="' . $v . '" />';
-        }, 'nexo-backup-lite', 'nexo_backup_lite_section');
+        }, self::SLUG, 'nexo_backup_lite_section');
+
+        // Patrón de nombres
+        add_settings_field('name_pattern', 'Patrón de nombre', function () {
+            $opts = get_option(NEXO_BACKUP_LITE_OPTION, []);
+            $v = esc_attr($opts['name_pattern'] ?? 'nexo-{YYYY}{MM}{DD}-{HH}{mm}{SS}');
+            $preview = esc_html(\Nexo\Backup\pattern_render($v));
+            echo '<input type="text" class="regular-text code" name="' . NEXO_BACKUP_LITE_OPTION . '[name_pattern]" value="' . $v . '" />';
+            echo '<p class="description">Define el nombre base para carpeta y archivos.<br/>Variables disponibles:
+            <code>{YYYY}</code>, <code>{YY}</code>, <code>{MM}</code>, <code>{DD}</code>, <code>{HH}</code>, <code>{mm}</code>, <code>{SS}</code>, <code>{site}</code>, <code>{ver}</code>, <code>{rand4}</code>, <code>{rand6}</code>.<br/>
+            Ejemplo: <code>backup-{YY}{MM}{DD}-{HH}{mm}-{site}</code> → Vista previa: <code id="nexo-pattern-preview">'.$preview.'</code></p>';
+        }, self::SLUG, 'nexo_backup_lite_section');
 
         // Planificación: activar
         add_settings_field('schedule_enabled', 'Planificación automática', function () {
             $opts = get_option(NEXO_BACKUP_LITE_OPTION, []);
             $checked = !empty($opts['schedule_enabled']) ? 'checked' : '';
             echo '<label><input type="checkbox" name="' . NEXO_BACKUP_LITE_OPTION . '[schedule_enabled]" value="1" ' . $checked . '> Activar</label>';
-        }, 'nexo-backup-lite', 'nexo_backup_lite_section');
+        }, self::SLUG, 'nexo_backup_lite_section');
 
         // Planificación: frecuencia
         add_settings_field('schedule_frequency', 'Frecuencia', function () {
@@ -83,24 +115,20 @@ class Admin {
                 echo '<option value="' . esc_attr($key) . '" ' . selected($v, $key, false) . '>' . esc_html($label) . '</option>';
             }
             echo '</select>';
-        }, 'nexo-backup-lite', 'nexo_backup_lite_section');
+        }, self::SLUG, 'nexo_backup_lite_section');
 
         // Planificación: hora
         add_settings_field('schedule_time', 'Hora (zona horaria del sitio)', function () {
             $opts = get_option(NEXO_BACKUP_LITE_OPTION, []);
             $v = esc_attr($opts['schedule_time'] ?? '03:00');
             echo '<input type="time" name="' . NEXO_BACKUP_LITE_OPTION . '[schedule_time]" value="' . $v . '" step="60" />';
-        }, 'nexo-backup-lite', 'nexo_backup_lite_section');
+        }, self::SLUG, 'nexo_backup_lite_section');
     }
 
-    /**
-     * Carga de assets en la página del plugin (CSS inline + JS AJAX)
-     */
     public function assets($hook) {
-        // Hook esperado: settings_page_nexo-backup-lite
-        if ($hook !== 'settings_page_nexo-backup-lite') return;
+        // Nuestra página padre y subpágina comparten slug
+        if ($hook !== 'toplevel_page_' . self::SLUG && $hook !== self::SLUG . '_page_' . self::SLUG) return;
 
-        // CSS inline sencillo para la barra
         wp_register_style('nexo-backup-lite-inline', false);
         wp_enqueue_style('nexo-backup-lite-inline');
         $css = '
@@ -112,7 +140,6 @@ class Admin {
         ';
         wp_add_inline_style('nexo-backup-lite-inline', $css);
 
-        // JS admin para iniciar/cancelar y mostrar progreso
         wp_enqueue_script(
             'nexo-backup-lite-admin',
             plugins_url('../assets/admin.js', __FILE__),
@@ -125,13 +152,8 @@ class Admin {
         ]);
     }
 
-    /**
-     * Renderiza la página de ajustes
-     */
     public function render() {
-        if (!current_user_can('manage_options')) {
-            wp_die('Permisos insuficientes');
-        }
+        if (!current_user_can(self::CAP)) wp_die('Permisos insuficientes');
 
         $msg = $_GET['nexo_msg'] ?? '';
         if ($msg) {
@@ -147,20 +169,24 @@ class Admin {
 
         echo '<div class="wrap"><h1>Nexo Backup Lite</h1>';
 
-        // Próxima ejecución del cron (si existe)
         $nextHuman = Scheduler::nextRunHuman();
         if ($nextHuman) {
             echo '<div class="notice notice-info"><p>Próxima copia programada: <strong>' . esc_html($nextHuman) . '</strong></p></div>';
         }
 
-        // Formulario de ajustes
+        echo '<h2 class="nav-tab-wrapper">';
+        $baseUrl = admin_url('admin.php?page=' . self::SLUG);
+        echo '<a class="nav-tab nav-tab-active" href="'.$baseUrl.'">Ajustes & Backup</a>';
+        echo '<a class="nav-tab" href="'.admin_url('admin.php?page='.Copies::SLUG).'">Copias</a>';
+        echo '</h2>';
+
         echo '<form method="post" action="options.php">';
         settings_fields('nexo_backup_lite_group');
-        do_settings_sections('nexo-backup-lite');
+        do_settings_sections(self::SLUG);
         submit_button('Guardar ajustes');
         echo '</form>';
 
-        // Botón manual clásico (síncrono) — opcional mantener
+        // Botón manual clásico
         echo '<hr/><h2>Crear copia ahora (modo clásico)</h2>';
         $url = admin_url('admin-post.php?action=nexo_backup_lite_run');
         echo '<form method="post" action="' . esc_url($url) . '">';
@@ -168,7 +194,7 @@ class Admin {
         submit_button('Crear copia ahora', 'secondary', 'submit', false);
         echo '</form>';
 
-        // Bloque de backup en segundo plano (AJAX + progreso)
+        // Backup en segundo plano
         echo '<hr/><h2>Backup en segundo plano</h2>';
         echo '<div id="nexo-progress"><div id="nexo-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span id="nexo-progress-text"></span></div></div>';
         echo '<div id="nexo-progress-wrap">
@@ -177,7 +203,7 @@ class Admin {
                 <div id="nexo-progress-detail"></div>
               </div>';
 
-        echo '<p class="description">Este modo no bloquea la interfaz. Puedes seguir usando el panel mientras se ejecuta la copia. Para máxima fiabilidad general, considera añadir un cron real del sistema que ejecute <code>wp cron event run --due-now</code>.</p>';
+        echo '<p class="description">Puedes seguir usando el panel mientras se ejecuta la copia. Para máxima fiabilidad, añade un cron real que ejecute <code>wp cron event run --due-now</code>.</p>';
 
         echo '</div>';
     }
