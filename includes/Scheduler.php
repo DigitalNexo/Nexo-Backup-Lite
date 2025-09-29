@@ -7,10 +7,7 @@ class Scheduler {
     const HOOK = 'nexo_backup_lite_cron';
 
     public static function boot(): void {
-        // Acción que ejecuta la copia cuando “salta” el cron
         add_action(self::HOOK, [__CLASS__, 'run']);
-
-        // Añadimos intervalos extra por si quieres usar wp_schedule_event por intervalo
         add_filter('cron_schedules', [__CLASS__, 'addIntervals']);
     }
 
@@ -19,15 +16,14 @@ class Scheduler {
             'interval' => 2 * DAY_IN_SECONDS,
             'display'  => __('Cada 2 días', 'nexo-backup-lite'),
         ];
-        // Nota: “mensual” lo calculamos manualmente para respetar misma hora/día, no por intervalo fijo.
-        return $schedules;
+        return $schedules; // weekly y daily ya vienen en WP
     }
 
-    /** Ejecuta la copia cuando la llama WP-Cron */
+    /** Ejecuta la copia cuando “salta” el cron */
     public static function run(): void {
         $settings = get_option(NEXO_BACKUP_LITE_OPTION, []);
 
-        // Lock: evita solapes
+        // Evitar solapes
         $lock_key = 'nexo_backup_lite_lock';
         if (get_transient($lock_key)) return;
         set_transient($lock_key, 1, 30 * MINUTE_IN_SECONDS);
@@ -46,9 +42,9 @@ class Scheduler {
             delete_transient($lock_key);
         }
 
-        // Reprograma la siguiente ejecución si la frecuencia es “mensual”
-        $freq = $settings['schedule_frequency'] ?? 'daily';
+        // Si es mensual, reprogramamos una sola vez para el próximo mes
         $enabled = !empty($settings['schedule_enabled']);
+        $freq = $settings['schedule_frequency'] ?? 'daily';
         if ($enabled && $freq === 'monthly') {
             self::unscheduleAll();
             $ts = self::nextTimestamp($settings);
@@ -66,10 +62,8 @@ class Scheduler {
         if (!$ts) return;
 
         if ($freq === 'monthly') {
-            // mensual: programamos la PRÓXIMA sola y, al terminar, nos volvemos a programar
             wp_schedule_single_event($ts, self::HOOK);
         } else {
-            // diaria / cada 2 días / semanal: evento recurrente
             $recurrence = match ($freq) {
                 'every_2_days' => 'every_2_days',
                 'weekly'       => 'weekly',
@@ -88,12 +82,11 @@ class Scheduler {
         }
     }
 
-    /** Calcula el próximo timestamp a la hora seleccionada, en la zona horaria de WP */
+    /** Calcula el próximo timestamp respetando la TZ de WP */
     public static function nextTimestamp(array $settings): ?int {
-        $time  = $settings['schedule_time'] ?? '03:00'; // por defecto 03:00
+        $time  = $settings['schedule_time'] ?? '03:00';
         [$hh, $mm] = array_map('intval', explode(':', $time . ':00'));
 
-        // Hora local de WP (no UTC)
         $tz   = wp_timezone();
         $now  = new \DateTime('now', $tz);
         $next = new \DateTime('now', $tz);
@@ -101,31 +94,25 @@ class Scheduler {
 
         $freq = $settings['schedule_frequency'] ?? 'daily';
 
-        if ($freq === 'weekly') {
-            // Día de la semana configurable en futuro; por ahora “mañana si ya pasó la hora, o hoy si no, y luego cada 7 días”
-            if ($next <= $now) $next->modify('+1 day');
-            // Llevar a la próxima ocurrencia del mismo día de la semana actual + 7 múltiplos:
-            while ($next->format('H:i') !== sprintf('%02d:%02d', $hh, $mm) || $next <= $now) {
-                $next->modify('+1 day');
-                if ($next->format('w') == $now->format('w')) break;
-            }
-            // Ajuste final: si aún no pasó, que sea hoy a la hora; si pasó, +7 días
-            if ($next <= $now) $next->modify('+7 days');
-        } elseif ($freq === 'every_2_days') {
-            if ($next <= $now) $next->modify('+2 days'); // próxima “ventana” a 48h vista
-            // si aún no ha pasado hoy a esa hora, respétalo:
-            if ($now < (clone $next)->modify('-2 days')) $next = (clone $next)->modify('-2 days');
-        } elseif ($freq === 'monthly') {
-            // misma hora y día del mes que hoy (o el siguiente si ya pasó)
-            if ($next <= $now) $next->modify('+1 month');
-        } else { // daily
-            if ($next <= $now) $next->modify('+1 day');
+        switch ($freq) {
+            case 'weekly':
+                // Próximo día de la semana igual al de hoy, pero a la hora indicada
+                if ($next <= $now) $next->modify('+7 days');
+                break;
+            case 'every_2_days':
+                if ($next <= $now) $next->modify('+2 days');
+                break;
+            case 'monthly':
+                if ($next <= $now) $next->modify('+1 month');
+                break;
+            default: // daily
+                if ($next <= $now) $next->modify('+1 day');
         }
 
         return $next->getTimestamp();
     }
 
-    /** Devuelve próximo timestamp legible (para mostrar en ajustes) */
+    /** Próxima ejecución legible para mostrar en ajustes */
     public static function nextRunHuman(): ?string {
         $ts = wp_next_scheduled(self::HOOK);
         if (!$ts) return null;
