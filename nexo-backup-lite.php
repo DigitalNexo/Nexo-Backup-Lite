@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Nexo Backup Lite (Local Only)
  * Description: Copias locales fuera del webroot con planificación, ejecución en segundo plano con progreso, listado/gestión de copias y actualizaciones desde GitHub. Menú propio y patrón de nombres personalizable.
- * Version: 0.6.1
+ * Version: 0.6.3
  * Author: Nexo
  * Requires at least: 6.0
  * Requires PHP: 8.0
@@ -10,7 +10,7 @@
 
 if (!defined('ABSPATH')) exit;
 
-define('NEXO_BACKUP_LITE_VER', '0.6.1');
+define('NEXO_BACKUP_LITE_VER', '0.6.3');
 define('NEXO_BACKUP_LITE_DIR', plugin_dir_path(__FILE__));
 define('NEXO_BACKUP_LITE_URL', plugin_dir_url(__FILE__));
 define('NEXO_BACKUP_LITE_OPTION', 'nexo_backup_lite_settings');
