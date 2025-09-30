@@ -25,10 +25,10 @@ require_once NEXO_BACKUP_LITE_DIR . 'includes/Copies.php';
 require_once NEXO_BACKUP_LITE_DIR . 'includes/Updater.php';
 
 // === Auto-update desde GitHub ===
-// Sustituye 'TU_USUARIO_GITHUB' y 'TU_REPO_GITHUB' por lo real
-add_action('init', function () {
+// Instanciación directa (no esperar a 'init' para no perder la ventana del check)
+if (is_admin()) {
     new \Nexo\Backup\Updater(__FILE__, 'DigitalNexo', 'Nexo-Backup-Lite');
-});
+}
 
 // Boot del scheduler
 add_action('plugins_loaded', function () {
@@ -233,17 +233,17 @@ add_action('wp_ajax_nexo_backup_tick', function(){
 
         // Abrir (o crear) el ZIP de forma robusta entre peticiones
         $zipPath = $st['zip_file'] ?? '';
-        if (!$zipPath) throw new RuntimeException('Ruta ZIP vacía.');
+        if (!$zipPath) throw new \RuntimeException('Ruta ZIP vacía.');
         if (!is_file($zipPath)) {
             $d = dirname($zipPath);
             if (!is_dir($d) && !@mkdir($d, 0755, true)) {
-                throw new RuntimeException('No se pudo recrear el directorio.');
+                throw new \RuntimeException('No se pudo recrear el directorio.');
             }
         }
 
         $zip = new ZipArchive();
         $openRes = $zip->open($zipPath, ZipArchive::CREATE);
-        if ($openRes !== true) throw new RuntimeException('No se pudo abrir/crear ZIP (código '.(int)$openRes.')');
+        if ($openRes !== true) throw new \RuntimeException('No se pudo abrir/crear ZIP (código '.(int)$openRes.')');
 
         while($processed < $batchSize && $st['index'] < $st['total']){
             $rel = $st['files'][$st['index']];
